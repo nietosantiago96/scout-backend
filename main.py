@@ -357,18 +357,47 @@ def get_player_data(player_name: str, squad: str = "", pos: str = "", age: str =
         # visit each one's real profile to confirm exact position (search-page position is unreliable)
         if pos:
             top_score = candidates[0]["score"]
-            tied = [c for c in candidates if c["score"] == top_score]
+            # Consider any candidate within the squad-matched group, not just exact score ties
+            squad_matched = [c for c in candidates if c["squad_match"]]
+            tied = squad_matched if len(squad_matched) > 1 else [c for c in candidates if c["score"] == top_score]
             if len(tied) > 1:
-                pos_tokens = [p.strip().lower() for p in pos.split(",") if p.strip()]
+                # Map dataset position codes to Transfermarkt's English position categories
+                pos_tokens = [p.strip().upper() for p in pos.split(",") if p.strip()]
+                attack_codes = {"CF", "ST", "LW", "RW", "LWF", "RWF", "AMF", "LAMF", "RAMF", "SS"}
+                mid_codes = {"CM", "CMF", "LCMF", "RCMF", "DMF", "LDMF", "RDMF"}
+                def_codes = {"CB", "LCB", "RCB", "LB", "RB", "LWB", "RWB", "SW"}
+
+                wants_attack = any(t in attack_codes for t in pos_tokens)
+                wants_mid = any(t in mid_codes for t in pos_tokens)
+                wants_def = any(t in pos_tokens for t in def_codes)
+
                 for c in tied:
                     try:
                         prof_resp = requests.get(c["url"], headers=HEADERS, timeout=8)
                         prof_soup = BeautifulSoup(prof_resp.text, "html.parser")
-                        prof_text = prof_soup.get_text(" ", strip=True).lower()
-                        c["profile_pos_match"] = any(tok in prof_text for tok in pos_tokens)
+
+                        real_position = ""
+                        for li in prof_soup.select("li.data-header__label"):
+                            txt = li.get_text(strip=True)
+                            if txt.lower().startswith("position:"):
+                                real_position = txt.split(":", 1)[1].strip().lower()
+                                break
+
+                        c["real_position"] = real_position
+                        is_attack = any(w in real_position for w in
+                            ["forward", "winger", "striker", "attack"])
+                        is_mid = "midfield" in real_position and not is_attack
+                        is_def = any(w in real_position for w in
+                            ["back", "defender", "sweeper"])
+
+                        c["profile_pos_match"] = (
+                            (wants_attack and is_attack) or
+                            (wants_mid and is_mid) or
+                            (wants_def and is_def)
+                        )
                     except Exception:
                         c["profile_pos_match"] = False
-                candidates.sort(key=lambda c: (-c["score"], not c.get("profile_pos_match", False)))
+                candidates.sort(key=lambda c: (not c.get("profile_pos_match", False), -c["score"]))
 
         best = candidates[0]
 
