@@ -94,7 +94,7 @@ def debug_search(player_name: str):
 
 
 @app.get("/player/{player_name}")
-def get_player_data(player_name: str, squad: str = "", pos: str = ""):
+def get_player_data(player_name: str, squad: str = "", pos: str = "", age: str = ""):
     """
     Search for a player on Transfermarkt and return:
     - market_value: current market value
@@ -102,13 +102,29 @@ def get_player_data(player_name: str, squad: str = "", pos: str = ""):
     - foot: preferred foot
     - minutes_pct: % of team minutes played this season
 
-    Uses squad (and optionally pos) as strong disambiguation signals,
-    since the dataset often has abbreviated first names (e.g. "T. Palacios").
+    Since the dataset has abbreviated first names (e.g. "T. Palacios"), and
+    Transfermarkt's search struggles with abbreviations, this falls back to
+    surname-only search and disambiguates candidates using:
+    - first-name initial match (the "T." in "T. Palacios" must match "Thiago", "Tomás", etc.)
+    - squad (strongest signal)
+    - age (±1 year tolerance, since TM age may be a season old)
+    - position
     """
     try:
         search_terms = extract_search_terms(player_name)
         candidates = []
         search_url = None
+
+        # Extract the first-name initial from the original query, e.g. "T" from "T. Palacios"
+        first_token = player_name.strip().split()[0] if player_name.strip() else ""
+        initial = first_token[0].lower() if first_token and first_token[0].isalpha() else None
+
+        target_age = None
+        if age:
+            try:
+                target_age = int(age)
+            except ValueError:
+                pass
 
         # Try each search term until we find player profile candidates
         for term in search_terms:
@@ -143,6 +159,14 @@ def get_player_data(player_name: str, squad: str = "", pos: str = ""):
                     if not name_match:
                         continue
 
+                    # First-name initial match: "T." must match a found name starting with "T"
+                    # (only enforced as a scoring signal, not a hard filter — TM nicknames vary)
+                    initial_match = False
+                    if initial:
+                        found_first_token = found_name.strip().split()[0] if found_name.strip() else ""
+                        if found_first_token and found_first_token[0].lower() == initial:
+                            initial_match = True
+
                     # Club for this row
                     club_cell = row.select_one("td.zentriert img.tiny_wappen")
                     club_title = club_cell.get("title", "") if club_cell else ""
@@ -150,6 +174,19 @@ def get_player_data(player_name: str, squad: str = "", pos: str = ""):
                     # Position (often shown in a nearby cell)
                     pos_cell = row.select_one("td.zentriert + td.zentriert")
                     pos_text = pos_cell.get_text(strip=True) if pos_cell else ""
+
+                    # Age: typically the last numeric-only cell in the row
+                    found_age = None
+                    for cell in row.select("td.zentriert"):
+                        txt = cell.get_text(strip=True)
+                        if txt.isdigit() and 14 <= int(txt) <= 45:
+                            found_age = int(txt)
+
+                    age_match = (
+                        target_age is not None
+                        and found_age is not None
+                        and abs(found_age - target_age) <= 1
+                    )
 
                     # Squad match: strong signal, fuzzy on common name variations
                     squad_match = False
@@ -166,15 +203,22 @@ def get_player_data(player_name: str, squad: str = "", pos: str = ""):
                     match = re.search(r"/spieler/(\d+)", href)
                     player_id = match.group(1) if match else None
 
-                    # Score candidates: squad match is the strongest signal
-                    score = (3 if squad_match else 0) + (1 if pos_match else 0)
+                    # Score candidates: squad match is strongest, then age, then initial, then pos
+                    score = (
+                        (4 if squad_match else 0)
+                        + (2 if age_match else 0)
+                        + (2 if initial_match else 0)
+                        + (1 if pos_match else 0)
+                    )
 
                     term_candidates.append({
                         "url": player_url,
                         "id": player_id,
                         "name": found_name,
                         "club": club_title,
+                        "age": found_age,
                         "squad_match": squad_match,
+                        "initial_match": initial_match,
                         "score": score,
                     })
 
@@ -191,7 +235,8 @@ def get_player_data(player_name: str, squad: str = "", pos: str = ""):
 
         # If no squad was given or no match found, this candidate may be wrong —
         # flag low confidence in the response so the frontend can show a warning
-        low_confidence = bool(squad) and not best["squad_match"]
+        # Low confidence if we have no strong disambiguation signal confirming this is the right player
+        low_confidence = best["score"] == 0 or (bool(squad) and not best["squad_match"] and not best["initial_match"])
 
         player_url = best["url"]
         player_id = best["id"]
