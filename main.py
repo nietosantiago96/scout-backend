@@ -196,6 +196,39 @@ def debug_profile_position(transfermarkt_slug: str, player_id: str):
     }
 
 
+@app.get("/debug-summary/{slug}/{player_id}")
+def debug_summary(slug: str, player_id: str):
+    """Debug: inspect the player's performance summary page (with % circles)."""
+    url = f"https://www.transfermarkt.com/{slug}/leistungsdaten/spieler/{player_id}"
+    resp = requests.get(url, headers=HEADERS, timeout=10)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Look for percentage circle elements
+    circles = []
+    for el in soup.select("[class*='circle'], [class*='Circle'], [class*='percent'], [class*='Percent']"):
+        txt = el.get_text(strip=True)
+        if txt:
+            circles.append({"class": el.get("class"), "text": txt})
+
+    # Also grab any element containing '%'
+    pct_elements = []
+    for el in soup.find_all(string=re.compile(r"\d+\s*%")):
+        parent = el.parent
+        pct_elements.append({
+            "text": el.strip(),
+            "parent_tag": parent.name,
+            "parent_class": parent.get("class"),
+        })
+
+    return {
+        "url": url,
+        "status_code": resp.status_code,
+        "circles_found": circles[:20],
+        "percent_text_elements": pct_elements[:20],
+        "page_title": soup.title.get_text(strip=True) if soup.title else None,
+    }
+
+
 @app.get("/debug-minutes/{player_id}")
 def debug_minutes(player_id: str, season: str = "2024"):
     """Debug: inspect the performance/minutes page structure for a player."""
