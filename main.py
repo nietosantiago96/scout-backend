@@ -93,6 +93,81 @@ def debug_search(player_name: str):
     }
 
 
+@app.get("/debug-candidates/{player_name}")
+def debug_candidates(player_name: str, squad: str = "", pos: str = "", age: str = ""):
+    """Debug endpoint: shows scored candidates without picking a winner."""
+    search_terms = extract_search_terms(player_name)
+    first_token = player_name.strip().split()[0] if player_name.strip() else ""
+    initial = first_token[0].lower() if first_token and first_token[0].isalpha() else None
+    target_age = None
+    if age:
+        try:
+            target_age = int(age)
+        except ValueError:
+            pass
+
+    results_by_term = {}
+
+    for term in search_terms:
+        search_query = normalize_name(term)
+        search_url = f"https://www.transfermarkt.com/schnellsuche/ergebnis/schnellsuche?query={requests.utils.quote(search_query)}"
+        resp = requests.get(search_url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        term_candidates = []
+        for table in soup.select("div.box table.items"):
+            for row in table.select("tbody tr"):
+                name_cell = row.select_one("td.hauptlink a")
+                if not name_cell:
+                    continue
+                href = name_cell.get("href", "")
+                if "/profil/spieler/" not in href:
+                    continue
+                found_name = name_cell.get_text(strip=True)
+
+                name_parts = [p for p in player_name.lower().replace(".", "").split() if len(p) > 1]
+                found_lower = found_name.lower()
+                if not any(p in found_lower for p in name_parts):
+                    continue
+
+                initial_match = False
+                if initial:
+                    ft = found_name.strip().split()[0] if found_name.strip() else ""
+                    if ft and ft[0].lower() == initial:
+                        initial_match = True
+
+                club_title = ""
+                club_img = row.select_one("img.tiny_wappen") or row.select_one("td.zentriert img")
+                if club_img:
+                    club_title = club_img.get("title", "") or club_img.get("alt", "")
+
+                found_age = None
+                for cell in row.select("td"):
+                    txt = cell.get_text(strip=True)
+                    if txt.isdigit() and 14 <= int(txt) <= 45:
+                        found_age = int(txt)
+                        break
+
+                term_candidates.append({
+                    "name": found_name,
+                    "href": href,
+                    "club": club_title,
+                    "age": found_age,
+                    "initial_match": initial_match,
+                })
+
+        results_by_term[term] = term_candidates
+        if term_candidates:
+            break
+
+    return {
+        "search_terms_tried": search_terms,
+        "initial_extracted": initial,
+        "target_age": target_age,
+        "results_by_term": results_by_term,
+    }
+
+
 @app.get("/player/{player_name}")
 def get_player_data(player_name: str, squad: str = "", pos: str = "", age: str = ""):
     """
@@ -167,20 +242,29 @@ def get_player_data(player_name: str, squad: str = "", pos: str = "", age: str =
                         if found_first_token and found_first_token[0].lower() == initial:
                             initial_match = True
 
-                    # Club for this row
-                    club_cell = row.select_one("td.zentriert img.tiny_wappen")
-                    club_title = club_cell.get("title", "") if club_cell else ""
+                    # Club for this row — try multiple possible selectors (TM markup varies by table type)
+                    club_title = ""
+                    club_img = row.select_one("img.tiny_wappen") or row.select_one("td.zentriert img")
+                    if club_img:
+                        club_title = club_img.get("title", "") or club_img.get("alt", "")
 
-                    # Position (often shown in a nearby cell)
-                    pos_cell = row.select_one("td.zentriert + td.zentriert")
-                    pos_text = pos_cell.get_text(strip=True) if pos_cell else ""
+                    # Position: look for any cell whose text matches common position abbreviations
+                    pos_text = ""
+                    for cell in row.select("td"):
+                        txt = cell.get_text(strip=True)
+                        if txt in ("CF", "AMF", "LW", "RW", "DMF", "CB", "LB", "RB",
+                                   "LWB", "RWB", "LCMF", "RCMF", "GK", "ST", "CM",
+                                   "LM", "RM", "CDM", "CAM", "LWF", "RWF"):
+                            pos_text = txt
+                            break
 
-                    # Age: typically the last numeric-only cell in the row
+                    # Age: any numeric cell in plausible player-age range
                     found_age = None
-                    for cell in row.select("td.zentriert"):
+                    for cell in row.select("td"):
                         txt = cell.get_text(strip=True)
                         if txt.isdigit() and 14 <= int(txt) <= 45:
                             found_age = int(txt)
+                            break
 
                     age_match = (
                         target_age is not None
