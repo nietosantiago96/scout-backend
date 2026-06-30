@@ -42,6 +42,29 @@ def root():
     return {"status": "ok", "service": "Scout Analytics API"}
 
 
+def extract_search_terms(player_name: str) -> list:
+    """
+    Build a list of search query candidates, from most to least specific.
+    Handles abbreviated first names like 'T. Palacios' which Transfermarkt's
+    search handles poorly — falls back to surname-only search.
+    """
+    name = player_name.strip()
+    queries = [name]  # try full name first
+
+    # Strip single-letter abbreviations like "T." or "Ma." at the start
+    parts = name.split()
+    # Remove parts that are abbreviations (end with '.' or are <=2 chars)
+    surname_parts = [p for p in parts if not (p.endswith(".") or len(p) <= 2)]
+    if surname_parts and " ".join(surname_parts) != name:
+        queries.append(" ".join(surname_parts))
+
+    # Last resort: just the last word (usually the surname)
+    if len(parts) > 1 and parts[-1] not in queries:
+        queries.append(parts[-1])
+
+    return queries
+
+
 @app.get("/debug-search/{player_name}")
 def debug_search(player_name: str):
     """Debug endpoint: shows raw search results to diagnose selector issues."""
@@ -83,87 +106,96 @@ def get_player_data(player_name: str, squad: str = "", pos: str = ""):
     since the dataset often has abbreviated first names (e.g. "T. Palacios").
     """
     try:
-        search_query = normalize_name(player_name)
-        search_url = f"https://www.transfermarkt.com/schnellsuche/ergebnis/schnellsuche?query={requests.utils.quote(search_query)}"
-        
-        resp = requests.get(search_url, headers=HEADERS, timeout=10)
-        resp.raise_for_status()
-        
-        soup = BeautifulSoup(resp.text, "html.parser")
-        
+        search_terms = extract_search_terms(player_name)
         candidates = []
-        
-        for table in soup.select("div.box table.items"):
-            for row in table.select("tbody tr"):
-                name_cell = row.select_one("td.hauptlink a")
-                if not name_cell:
-                    continue
-                
-                href = name_cell.get("href", "")
-                
-                # CRITICAL: only accept actual player profiles, reject agents/coaches/clubs/staff
-                if "/profil/spieler/" not in href:
-                    continue
-                
-                found_name = name_cell.get_text(strip=True)
-                
-                # Match name (flexible — at least one meaningful word matches, e.g. surname)
-                name_parts = [p for p in player_name.lower().replace(".", "").split() if len(p) > 1]
-                found_lower = found_name.lower()
-                name_match = any(p in found_lower for p in name_parts)
-                
-                if not name_match:
-                    continue
-                
-                # Club for this row
-                club_cell = row.select_one("td.zentriert img.tiny_wappen")
-                club_title = club_cell.get("title", "") if club_cell else ""
-                
-                # Position (often shown in a nearby cell)
-                pos_cell = row.select_one("td.zentriert + td.zentriert")
-                pos_text = pos_cell.get_text(strip=True) if pos_cell else ""
-                
-                # Squad match: strong signal, fuzzy on common name variations
-                squad_match = False
-                if squad:
-                    sq = squad.lower()
-                    ct = club_title.lower()
-                    squad_match = sq in ct or ct in sq or any(
-                        w in ct for w in sq.split() if len(w) > 3
-                    )
-                
-                pos_match = bool(pos) and pos.lower() in pos_text.lower()
-                
-                player_url = "https://www.transfermarkt.com" + href
-                match = re.search(r"/spieler/(\d+)", href)
-                player_id = match.group(1) if match else None
-                
-                # Score candidates: squad match is the strongest signal
-                score = (3 if squad_match else 0) + (1 if pos_match else 0)
-                
-                candidates.append({
-                    "url": player_url,
-                    "id": player_id,
-                    "name": found_name,
-                    "club": club_title,
-                    "squad_match": squad_match,
-                    "score": score,
-                })
-        
+        search_url = None
+
+        # Try each search term until we find player profile candidates
+        for term in search_terms:
+            search_query = normalize_name(term)
+            search_url = f"https://www.transfermarkt.com/schnellsuche/ergebnis/schnellsuche?query={requests.utils.quote(search_query)}"
+
+            resp = requests.get(search_url, headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            term_candidates = []
+
+            for table in soup.select("div.box table.items"):
+                for row in table.select("tbody tr"):
+                    name_cell = row.select_one("td.hauptlink a")
+                    if not name_cell:
+                        continue
+
+                    href = name_cell.get("href", "")
+
+                    # CRITICAL: only accept actual player profiles, reject agents/coaches/clubs/staff
+                    if "/profil/spieler/" not in href:
+                        continue
+
+                    found_name = name_cell.get_text(strip=True)
+
+                    # Match name (flexible — at least one meaningful word matches, e.g. surname)
+                    name_parts = [p for p in player_name.lower().replace(".", "").split() if len(p) > 1]
+                    found_lower = found_name.lower()
+                    name_match = any(p in found_lower for p in name_parts)
+
+                    if not name_match:
+                        continue
+
+                    # Club for this row
+                    club_cell = row.select_one("td.zentriert img.tiny_wappen")
+                    club_title = club_cell.get("title", "") if club_cell else ""
+
+                    # Position (often shown in a nearby cell)
+                    pos_cell = row.select_one("td.zentriert + td.zentriert")
+                    pos_text = pos_cell.get_text(strip=True) if pos_cell else ""
+
+                    # Squad match: strong signal, fuzzy on common name variations
+                    squad_match = False
+                    if squad:
+                        sq = squad.lower()
+                        ct = club_title.lower()
+                        squad_match = sq in ct or ct in sq or any(
+                            w in ct for w in sq.split() if len(w) > 3
+                        )
+
+                    pos_match = bool(pos) and pos.lower() in pos_text.lower()
+
+                    player_url = "https://www.transfermarkt.com" + href
+                    match = re.search(r"/spieler/(\d+)", href)
+                    player_id = match.group(1) if match else None
+
+                    # Score candidates: squad match is the strongest signal
+                    score = (3 if squad_match else 0) + (1 if pos_match else 0)
+
+                    term_candidates.append({
+                        "url": player_url,
+                        "id": player_id,
+                        "name": found_name,
+                        "club": club_title,
+                        "squad_match": squad_match,
+                        "score": score,
+                    })
+
+            if term_candidates:
+                candidates = term_candidates
+                break  # stop trying broader queries once we have player results
+
         if not candidates:
             raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found on Transfermarkt")
-        
+
         # Pick highest-scoring candidate; ties broken by first appearance (Transfermarkt relevance order)
         candidates.sort(key=lambda c: -c["score"])
         best = candidates[0]
-        
+
         # If no squad was given or no match found, this candidate may be wrong —
         # flag low confidence in the response so the frontend can show a warning
         low_confidence = bool(squad) and not best["squad_match"]
-        
+
         player_url = best["url"]
         player_id = best["id"]
-        
+
         # 2. Get player profile page
         profile_resp = requests.get(player_url, headers=HEADERS, timeout=10)
         profile_resp.raise_for_status()
