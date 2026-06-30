@@ -168,6 +168,34 @@ def debug_candidates(player_name: str, squad: str = "", pos: str = "", age: str 
     }
 
 
+@app.get("/debug-profile-pos/{transfermarkt_slug}/{player_id}")
+def debug_profile_position(transfermarkt_slug: str, player_id: str):
+    """Debug: extract the actual position field from a player's TM profile page."""
+    url = f"https://www.transfermarkt.com/{transfermarkt_slug}/profil/spieler/{player_id}"
+    resp = requests.get(url, headers=HEADERS, timeout=10)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Try the common TM position selectors
+    position_candidates = []
+
+    for sel in [
+        "li.data-header__label",
+        "span.info-table__content--bold",
+        "div.detail-position__position",
+        "span.data-header__content",
+    ]:
+        for el in soup.select(sel):
+            txt = el.get_text(strip=True)
+            if txt:
+                position_candidates.append({"selector": sel, "text": txt})
+
+    return {
+        "url": url,
+        "status_code": resp.status_code,
+        "candidates": position_candidates[:25],
+    }
+
+
 @app.get("/player/{player_name}")
 def get_player_data(player_name: str, squad: str = "", pos: str = "", age: str = ""):
     """
