@@ -43,16 +43,18 @@ def root():
 
 
 @app.get("/player/{player_name}")
-def get_player_data(player_name: str, squad: str = ""):
+def get_player_data(player_name: str, squad: str = "", pos: str = ""):
     """
     Search for a player on Transfermarkt and return:
     - market_value: current market value
     - contract_end: contract expiration date
     - foot: preferred foot
     - minutes_pct: % of team minutes played this season
+
+    Uses squad (and optionally pos) as strong disambiguation signals,
+    since the dataset often has abbreviated first names (e.g. "T. Palacios").
     """
     try:
-        # 1. Search for the player
         search_query = normalize_name(player_name)
         search_url = f"https://www.transfermarkt.com/schnellsuche/ergebnis/schnellsuche?query={requests.utils.quote(search_query)}"
         
@@ -61,8 +63,7 @@ def get_player_data(player_name: str, squad: str = ""):
         
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # Find player in search results
-        candidates = []  # list of (player_url, player_id, found_name, club_title, squad_match)
+        candidates = []
         
         for table in soup.select("div.box table.items"):
             for row in table.select("tbody tr"):
@@ -72,13 +73,13 @@ def get_player_data(player_name: str, squad: str = ""):
                 
                 href = name_cell.get("href", "")
                 
-                # CRITICAL: only accept actual player profiles, reject agents/coaches/clubs
+                # CRITICAL: only accept actual player profiles, reject agents/coaches/clubs/staff
                 if "/profil/spieler/" not in href:
                     continue
                 
                 found_name = name_cell.get_text(strip=True)
                 
-                # Match name (flexible — at least one meaningful word matches)
+                # Match name (flexible — at least one meaningful word matches, e.g. surname)
                 name_parts = [p for p in player_name.lower().replace(".", "").split() if len(p) > 1]
                 found_lower = found_name.lower()
                 name_match = any(p in found_lower for p in name_parts)
@@ -86,14 +87,31 @@ def get_player_data(player_name: str, squad: str = ""):
                 if not name_match:
                     continue
                 
-                # Get club from the row
+                # Club for this row
                 club_cell = row.select_one("td.zentriert img.tiny_wappen")
                 club_title = club_cell.get("title", "") if club_cell else ""
-                squad_match = bool(squad) and squad.lower() in club_title.lower()
+                
+                # Position (often shown in a nearby cell)
+                pos_cell = row.select_one("td.zentriert + td.zentriert")
+                pos_text = pos_cell.get_text(strip=True) if pos_cell else ""
+                
+                # Squad match: strong signal, fuzzy on common name variations
+                squad_match = False
+                if squad:
+                    sq = squad.lower()
+                    ct = club_title.lower()
+                    squad_match = sq in ct or ct in sq or any(
+                        w in ct for w in sq.split() if len(w) > 3
+                    )
+                
+                pos_match = bool(pos) and pos.lower() in pos_text.lower()
                 
                 player_url = "https://www.transfermarkt.com" + href
                 match = re.search(r"/spieler/(\d+)", href)
                 player_id = match.group(1) if match else None
+                
+                # Score candidates: squad match is the strongest signal
+                score = (3 if squad_match else 0) + (1 if pos_match else 0)
                 
                 candidates.append({
                     "url": player_url,
@@ -101,13 +119,20 @@ def get_player_data(player_name: str, squad: str = ""):
                     "name": found_name,
                     "club": club_title,
                     "squad_match": squad_match,
+                    "score": score,
                 })
         
         if not candidates:
             raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found on Transfermarkt")
         
-        # Prefer exact squad match; otherwise take first candidate
-        best = next((c for c in candidates if c["squad_match"]), candidates[0])
+        # Pick highest-scoring candidate; ties broken by first appearance (Transfermarkt relevance order)
+        candidates.sort(key=lambda c: -c["score"])
+        best = candidates[0]
+        
+        # If no squad was given or no match found, this candidate may be wrong —
+        # flag low confidence in the response so the frontend can show a warning
+        low_confidence = bool(squad) and not best["squad_match"]
+        
         player_url = best["url"]
         player_id = best["id"]
         
@@ -184,6 +209,7 @@ def get_player_data(player_name: str, squad: str = ""):
             "player": player_name,
             "matched_name": best["name"],
             "matched_club": best["club"],
+            "low_confidence": low_confidence,
             "transfermarkt_url": player_url,
             "market_value": market_value,
             "contract_end": contract_end,
