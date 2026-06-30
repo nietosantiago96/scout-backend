@@ -196,6 +196,48 @@ def debug_profile_position(transfermarkt_slug: str, player_id: str):
     }
 
 
+@app.get("/debug-raw-tables/{slug}/{player_id}")
+def debug_raw_tables(slug: str, player_id: str):
+    """Debug: dump all tables found on the performance page to find minutes data."""
+    url = f"https://www.transfermarkt.com/{slug}/leistungsdaten/spieler/{player_id}"
+    resp = requests.get(url, headers=HEADERS, timeout=10)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    tables_info = []
+    for i, table in enumerate(soup.select("table")):
+        rows = table.select("tr")
+        sample = []
+        for row in rows[:3]:
+            cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+            if cells:
+                sample.append(cells)
+        tables_info.append({
+            "index": i,
+            "class": table.get("class"),
+            "id": table.get("id"),
+            "row_count": len(rows),
+            "sample_rows": sample,
+        })
+
+    # Also check for any div with 'minutes' or 'einsatz' (German for "appearance") in class/id
+    minutes_divs = []
+    for el in soup.select("[class*='inutes'], [class*='insatz'], [id*='inutes']"):
+        minutes_divs.append({
+            "tag": el.name,
+            "class": el.get("class"),
+            "id": el.get("id"),
+            "text": el.get_text(strip=True)[:100],
+        })
+
+    return {
+        "url": url,
+        "status_code": resp.status_code,
+        "tables_count": len(tables_info),
+        "tables": tables_info[:10],
+        "minutes_related_elements": minutes_divs[:15],
+    }
+
+
 @app.get("/debug-summary/{slug}/{player_id}")
 def debug_summary(slug: str, player_id: str):
     """Debug: inspect the player's performance summary page (with % circles)."""
