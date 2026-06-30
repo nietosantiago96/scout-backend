@@ -42,6 +42,34 @@ def root():
     return {"status": "ok", "service": "Scout Analytics API"}
 
 
+@app.get("/debug-search/{player_name}")
+def debug_search(player_name: str):
+    """Debug endpoint: shows raw search results to diagnose selector issues."""
+    search_query = normalize_name(player_name)
+    search_url = f"https://www.transfermarkt.com/schnellsuche/ergebnis/schnellsuche?query={requests.utils.quote(search_query)}"
+    resp = requests.get(search_url, headers=HEADERS, timeout=10)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    all_links = []
+    for a in soup.select("td.hauptlink a"):
+        href = a.get("href", "")
+        text = a.get_text(strip=True)
+        if href and text:
+            all_links.append({"text": text, "href": href})
+
+    tables_found = len(soup.select("div.box table.items"))
+    any_tables = len(soup.select("table"))
+
+    return {
+        "status_code": resp.status_code,
+        "search_url": search_url,
+        "tables_with_selector": tables_found,
+        "any_tables_found": any_tables,
+        "all_hauptlink_links": all_links[:30],
+        "page_title": soup.title.get_text(strip=True) if soup.title else None,
+    }
+
+
 @app.get("/player/{player_name}")
 def get_player_data(player_name: str, squad: str = "", pos: str = ""):
     """
