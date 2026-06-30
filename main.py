@@ -62,49 +62,54 @@ def get_player_data(player_name: str, squad: str = ""):
         soup = BeautifulSoup(resp.text, "html.parser")
         
         # Find player in search results
-        player_url = None
-        player_id = None
+        candidates = []  # list of (player_url, player_id, found_name, club_title, squad_match)
         
-        # Look in the players table
         for table in soup.select("div.box table.items"):
             for row in table.select("tbody tr"):
-                cells = row.find_all("td")
-                if len(cells) < 2:
-                    continue
-                
-                # Get player name link
                 name_cell = row.select_one("td.hauptlink a")
                 if not name_cell:
                     continue
                 
-                found_name = name_cell.get_text(strip=True)
                 href = name_cell.get("href", "")
                 
-                # Match by name (flexible)
-                name_parts = player_name.lower().split()
-                found_parts = found_name.lower().split()
+                # CRITICAL: only accept actual player profiles, reject agents/coaches/clubs
+                if "/profil/spieler/" not in href:
+                    continue
                 
-                # Check if squad matches too (if provided)
-                club_cell = row.select_one("td.zentriert img")
+                found_name = name_cell.get_text(strip=True)
+                
+                # Match name (flexible — at least one meaningful word matches)
+                name_parts = [p for p in player_name.lower().replace(".", "").split() if len(p) > 1]
+                found_lower = found_name.lower()
+                name_match = any(p in found_lower for p in name_parts)
+                
+                if not name_match:
+                    continue
+                
+                # Get club from the row
+                club_cell = row.select_one("td.zentriert img.tiny_wappen")
                 club_title = club_cell.get("title", "") if club_cell else ""
+                squad_match = bool(squad) and squad.lower() in club_title.lower()
                 
-                name_match = any(p in found_name.lower() for p in name_parts if len(p) > 2)
-                squad_match = not squad or squad.lower() in club_title.lower()
+                player_url = "https://www.transfermarkt.com" + href
+                match = re.search(r"/spieler/(\d+)", href)
+                player_id = match.group(1) if match else None
                 
-                if name_match and href:
-                    player_url = "https://www.transfermarkt.com" + href
-                    # Extract player ID from URL
-                    match = re.search(r"/(\d+)$", href)
-                    if match:
-                        player_id = match.group(1)
-                    if squad_match:
-                        break  # prefer squad match
-            
-            if player_url:
-                break
+                candidates.append({
+                    "url": player_url,
+                    "id": player_id,
+                    "name": found_name,
+                    "club": club_title,
+                    "squad_match": squad_match,
+                })
         
-        if not player_url:
+        if not candidates:
             raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found on Transfermarkt")
+        
+        # Prefer exact squad match; otherwise take first candidate
+        best = next((c for c in candidates if c["squad_match"]), candidates[0])
+        player_url = best["url"]
+        player_id = best["id"]
         
         # 2. Get player profile page
         profile_resp = requests.get(player_url, headers=HEADERS, timeout=10)
@@ -146,6 +151,7 @@ def get_player_data(player_name: str, squad: str = ""):
         
         # 3. Get minutes % from performance stats
         minutes_pct = None
+        player_minutes = 0
         if player_id:
             # Get performance data page
             perf_url = f"https://www.transfermarkt.com/player/leistungsdaten/spieler/{player_id}/saison/2024/verein/0/liga/0/wettbewerb//pos/0/trainer_id/0/plus/1"
@@ -176,11 +182,13 @@ def get_player_data(player_name: str, squad: str = ""):
         
         return {
             "player": player_name,
+            "matched_name": best["name"],
+            "matched_club": best["club"],
             "transfermarkt_url": player_url,
             "market_value": market_value,
             "contract_end": contract_end,
             "foot": foot,
-            "minutes_played": player_minutes if player_id else None,
+            "minutes_played": player_minutes if player_minutes else None,
             "minutes_pct": minutes_pct,
             "total_team_minutes": 3060 if minutes_pct else None,
         }
