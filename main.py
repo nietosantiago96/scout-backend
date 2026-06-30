@@ -196,6 +196,39 @@ def debug_profile_position(transfermarkt_slug: str, player_id: str):
     }
 
 
+@app.get("/debug-profile-minutes/{slug}/{player_id}")
+def debug_profile_minutes(slug: str, player_id: str):
+    """Debug: look for season minutes/appearances stats in the main (static) profile page."""
+    url = f"https://www.transfermarkt.com/{slug}/profil/spieler/{player_id}"
+    resp = requests.get(url, headers=HEADERS, timeout=10)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Look for any box/section mentioning minutes, appearances, or season stats
+    boxes = []
+    for box in soup.select("div.box"):
+        header = box.select_one("h2")
+        header_text = header.get_text(strip=True) if header else ""
+        if any(w in header_text.lower() for w in ["performance", "stats", "season", "rendimiento", "temporada"]):
+            rows = []
+            for row in box.select("tr")[:10]:
+                cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+                if cells:
+                    rows.append(cells)
+            boxes.append({"header": header_text, "rows": rows})
+
+    # Also search for any text containing "Minutes played" or similar
+    minute_texts = []
+    for el in soup.find_all(string=re.compile(r"[Mm]inutes? played|[Mm]inutos jugados")):
+        minute_texts.append(el.strip())
+
+    return {
+        "url": url,
+        "status_code": resp.status_code,
+        "relevant_boxes": boxes,
+        "minute_mentions": minute_texts[:10],
+    }
+
+
 @app.get("/debug-raw-tables/{slug}/{player_id}")
 def debug_raw_tables(slug: str, player_id: str):
     """Debug: dump all tables found on the performance page to find minutes data."""
