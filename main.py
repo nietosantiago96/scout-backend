@@ -196,6 +196,34 @@ def debug_profile_position(transfermarkt_slug: str, player_id: str):
     }
 
 
+@app.get("/debug-minutes/{player_id}")
+def debug_minutes(player_id: str, season: str = "2024"):
+    """Debug: inspect the performance/minutes page structure for a player."""
+    perf_url = f"https://www.transfermarkt.com/player/leistungsdaten/spieler/{player_id}/saison/{season}/verein/0/liga/0/wettbewerb//pos/0/trainer_id/0/plus/1"
+    resp = requests.get(perf_url, headers=HEADERS, timeout=10)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    tfoot_rows = []
+    for row in soup.select("tfoot tr"):
+        cells = [c.get_text(strip=True) for c in row.find_all("td")]
+        tfoot_rows.append(cells)
+
+    # Also grab any row with minutes-like data
+    sample_rows = []
+    for row in soup.select("table tr")[:15]:
+        cells = [c.get_text(strip=True) for c in row.find_all("td")]
+        if cells:
+            sample_rows.append(cells)
+
+    return {
+        "url": perf_url,
+        "status_code": resp.status_code,
+        "tfoot_rows": tfoot_rows,
+        "sample_rows": sample_rows,
+        "page_title": soup.title.get_text(strip=True) if soup.title else None,
+    }
+
+
 @app.get("/player/{player_name}")
 def get_player_data(player_name: str, squad: str = "", pos: str = "", age: str = ""):
     """
