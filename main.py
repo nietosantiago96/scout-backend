@@ -313,8 +313,35 @@ def get_player_data(player_name: str, squad: str = "", pos: str = "", age: str =
         if not candidates:
             raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found on Transfermarkt")
 
-        # Pick highest-scoring candidate; ties broken by first appearance (Transfermarkt relevance order)
+        # De-duplicate by href (search results often list the same player twice)
+        seen_hrefs = set()
+        deduped = []
+        for c in candidates:
+            href_key = c["url"]
+            if href_key not in seen_hrefs:
+                seen_hrefs.add(href_key)
+                deduped.append(c)
+        candidates = deduped
+
         candidates.sort(key=lambda c: -c["score"])
+
+        # If multiple candidates tie on the top score AND we have a position to check,
+        # visit each one's real profile to confirm exact position (search-page position is unreliable)
+        if pos:
+            top_score = candidates[0]["score"]
+            tied = [c for c in candidates if c["score"] == top_score]
+            if len(tied) > 1:
+                pos_tokens = [p.strip().lower() for p in pos.split(",") if p.strip()]
+                for c in tied:
+                    try:
+                        prof_resp = requests.get(c["url"], headers=HEADERS, timeout=8)
+                        prof_soup = BeautifulSoup(prof_resp.text, "html.parser")
+                        prof_text = prof_soup.get_text(" ", strip=True).lower()
+                        c["profile_pos_match"] = any(tok in prof_text for tok in pos_tokens)
+                    except Exception:
+                        c["profile_pos_match"] = False
+                candidates.sort(key=lambda c: (-c["score"], not c.get("profile_pos_match", False)))
+
         best = candidates[0]
 
         # If no squad was given or no match found, this candidate may be wrong —
