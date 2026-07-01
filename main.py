@@ -196,6 +196,39 @@ def debug_profile_position(transfermarkt_slug: str, player_id: str):
     }
 
 
+@app.get("/debug-stats-page/{slug}/{player_id}")
+def debug_stats_page(slug: str, player_id: str):
+    """Debug: try different stat page URLs to find one with static HTML minutes data."""
+    results = {}
+
+    # Try different URL patterns Transfermarkt uses for stats
+    urls_to_try = [
+        f"https://www.transfermarkt.com/{slug}/leistungsdaten/spieler/{player_id}/plus/1",
+        f"https://www.transfermarkt.com/{slug}/leistungsdaten/spieler/{player_id}/saison/2025",
+        f"https://www.transfermarkt.com/{slug}/leistungsdaten/spieler/{player_id}/saison/2025/plus/1",
+        f"https://www.transfermarkt.com/{slug}/transfers/spieler/{player_id}",
+    ]
+
+    for url in urls_to_try:
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        tables = soup.select("table")
+        
+        # Look for any text with minutes pattern (e.g. "1.234'" or "1234'")
+        minute_texts = []
+        for el in soup.find_all(string=re.compile(r"\d[\d\.]*'")):
+            minute_texts.append(el.strip())
+
+        results[url] = {
+            "status": resp.status_code,
+            "tables_found": len(tables),
+            "minute_patterns": minute_texts[:10],
+            "page_title": soup.title.get_text(strip=True) if soup.title else None,
+        }
+
+    return results
+
+
 @app.get("/debug-full-profile/{slug}/{player_id}")
 def debug_full_profile(slug: str, player_id: str):
     """Debug: dump everything available in the static profile page."""
