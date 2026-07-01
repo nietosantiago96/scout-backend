@@ -583,41 +583,29 @@ def get_player_data(player_name: str, squad: str = "", pos: str = "", age: str =
         profile_resp = requests.get(player_url, headers=HEADERS, timeout=10)
         profile_resp.raise_for_status()
         profile_soup = BeautifulSoup(profile_resp.text, "html.parser")
-        
-        # Extract market value
+
+        # Extract all info_table pairs into a dict
+        info = {}
+        for bold in profile_soup.select("span.info-table__content--bold"):
+            label_el = bold.find_previous("span", class_="info-table__content--regular")
+            if label_el:
+                key = label_el.get_text(strip=True).rstrip(":").strip().lower()
+                info[key] = bold.get_text(strip=True)
+
+        # Market value from header
         market_value = "N/D"
         mv_elem = profile_soup.select_one("a.data-header__market-value-wrapper")
         if mv_elem:
-            market_value = parse_market_value(mv_elem.get_text(strip=True).split("Last")[0])
-        
-        # Extract contract end
-        contract_end = "N/D"
-        for item in profile_soup.select("li.data-header__label"):
-            text = item.get_text(strip=True)
-            if "Contract" in text or "Contrato" in text or "Jun" in text or "Dec" in text:
-                span = item.select_one("span")
-                if span:
-                    contract_end = span.get_text(strip=True)
-                    break
-        
-        # More reliable: look in info table
-        for row in profile_soup.select("span.info-table__content--bold"):
-            prev = row.find_previous("span", class_="info-table__content--regular")
-            if prev and ("contract" in prev.get_text(strip=True).lower() or 
-                        "contrato" in prev.get_text(strip=True).lower()):
-                contract_end = row.get_text(strip=True)
-                break
-        
-        # Extract foot
-        foot = "N/D"
-        for row in profile_soup.select("span.info-table__content--bold"):
-            prev = row.find_previous("span", class_="info-table__content--regular")
-            if prev and ("foot" in prev.get_text(strip=True).lower() or
-                        "pie" in prev.get_text(strip=True).lower()):
-                foot = row.get_text(strip=True)
-                break
-        
-        # 3. Return data — minutes not available in static HTML (requires JS rendering)
+            raw_mv = mv_elem.get_text(strip=True).split("Last")[0].strip()
+            if raw_mv:
+                market_value = raw_mv
+
+        contract_end = info.get("contract expires", "N/D")
+        foot         = info.get("foot", info.get("strong foot", "N/D"))
+        position_tm  = info.get("position", "N/D")
+        height       = info.get("height", "N/D")
+        nationality  = info.get("citizenship", "N/D")
+
         return {
             "player": player_name,
             "matched_name": best["name"],
@@ -627,6 +615,9 @@ def get_player_data(player_name: str, squad: str = "", pos: str = "", age: str =
             "market_value": market_value,
             "contract_end": contract_end,
             "foot": foot,
+            "position_tm": position_tm,
+            "height": height,
+            "nationality": nationality,
         }
     
     except HTTPException:
