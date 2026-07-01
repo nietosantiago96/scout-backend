@@ -196,6 +196,40 @@ def debug_profile_position(transfermarkt_slug: str, player_id: str):
     }
 
 
+@app.get("/debug-full-profile/{slug}/{player_id}")
+def debug_full_profile(slug: str, player_id: str):
+    """Debug: dump everything available in the static profile page."""
+    url = f"https://www.transfermarkt.com/{slug}/profil/spieler/{player_id}"
+    resp = requests.get(url, headers=HEADERS, timeout=10)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # All box headers
+    boxes = []
+    for box in soup.select("div.box"):
+        header = box.select_one("h2, h3")
+        header_text = header.get_text(strip=True) if header else "NO HEADER"
+        all_text = box.get_text(" ", strip=True)[:300]
+        boxes.append({"header": header_text, "preview": all_text})
+
+    # All info table rows (bold label/value pairs)
+    info_pairs = []
+    for bold in soup.select("span.info-table__content--bold"):
+        label_el = bold.find_previous("span", class_="info-table__content--regular")
+        label = label_el.get_text(strip=True) if label_el else ""
+        info_pairs.append({"label": label, "value": bold.get_text(strip=True)})
+
+    # Data header labels
+    header_labels = [li.get_text(strip=True) for li in soup.select("li.data-header__label")]
+
+    return {
+        "url": url,
+        "status_code": resp.status_code,
+        "box_headers": boxes,
+        "info_table_pairs": info_pairs,
+        "data_header_labels": header_labels,
+    }
+
+
 @app.get("/debug-profile-minutes/{slug}/{player_id}")
 def debug_profile_minutes(slug: str, player_id: str):
     """Debug: look for season minutes/appearances stats in the main (static) profile page."""
@@ -583,37 +617,7 @@ def get_player_data(player_name: str, squad: str = "", pos: str = "", age: str =
                 foot = row.get_text(strip=True)
                 break
         
-        # 3. Get minutes % from performance stats
-        minutes_pct = None
-        player_minutes = 0
-        if player_id:
-            # Get performance data page
-            perf_url = f"https://www.transfermarkt.com/player/leistungsdaten/spieler/{player_id}/saison/2024/verein/0/liga/0/wettbewerb//pos/0/trainer_id/0/plus/1"
-            perf_resp = requests.get(perf_url, headers=HEADERS, timeout=10)
-            
-            if perf_resp.status_code == 200:
-                perf_soup = BeautifulSoup(perf_resp.text, "html.parser")
-                
-                # Find total minutes played this season
-                player_minutes = 0
-                for row in perf_soup.select("tfoot tr"):
-                    cells = row.find_all("td")
-                    # Minutes are usually in a specific column
-                    for cell in cells:
-                        text = cell.get_text(strip=True).replace(".", "").replace(",", "")
-                        if "'" in cell.get_text(strip=True):
-                            try:
-                                player_minutes = int(text.replace("'", ""))
-                                break
-                            except:
-                                pass
-                
-                # Calculate % (assuming ~3060 total team minutes per season — 34 games x 90 min)
-                # Better: get from team page but this is a good approximation
-                if player_minutes > 0:
-                    total_team_minutes = 3060  # standard league season
-                    minutes_pct = round((player_minutes / total_team_minutes) * 100, 1)
-        
+        # 3. Return data — minutes not available in static HTML (requires JS rendering)
         return {
             "player": player_name,
             "matched_name": best["name"],
@@ -623,9 +627,6 @@ def get_player_data(player_name: str, squad: str = "", pos: str = "", age: str =
             "market_value": market_value,
             "contract_end": contract_end,
             "foot": foot,
-            "minutes_played": player_minutes if player_minutes else None,
-            "minutes_pct": minutes_pct,
-            "total_team_minutes": 3060 if minutes_pct else None,
         }
     
     except HTTPException:
